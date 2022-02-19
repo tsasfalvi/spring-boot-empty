@@ -1,0 +1,250 @@
+# the different environments (dev, test, stage, prod) are living in separate kubernetes clusters
+# you should apply the secrets file first
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: backend
+  namespace: PLACEHOLDER_APPLICATION
+  labels:
+    app: backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: backend
+  strategy: {}
+  template:
+    metadata:
+      namespace: PLACEHOLDER_APPLICATION
+      labels:
+        app: backend
+    spec:
+      containers:
+        - image: topdomain.seconddomain.application.backend:0.2.0
+          name: backend
+          resources: {}
+          imagePullPolicy: Never # set for local development only by default
+          env:
+            - name: REDIS_TTL
+              valueFrom:
+                configMapKeyRef:
+                  name: backend-config
+                  key: redis-ttl
+            - name: MONGO_DATABASE
+              valueFrom:
+                configMapKeyRef:
+                  name: backend-config
+                  key: mongo-database
+            - name: MONGO_CONNECTION_STRING
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: mongo-connectionString
+            - name: GOOGLE_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: google-clientId
+            - name: GOOGLE_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: google-clientSecret
+          ports:
+            - name: backend-port
+              containerPort: 8080
+              hostPort: 8080
+          startupProbe:
+            httpGet:
+              path: /actuator/health
+              port: backend-port
+            failureThreshold: 6
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: backend-port
+            failureThreshold: 1
+            periodSeconds: 10
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: backend-service
+  namespace: PLACEHOLDER_APPLICATION
+spec:
+  type: NodePort
+  selector:
+    app: backend
+  ports:
+    - protocol: TCP
+      port: 8080
+      targetPort: 8080
+      nodePort: 31000
+---
+kind: Pod
+apiVersion: v1
+metadata:
+  name: redis
+  namespace: PLACEHOLDER_APPLICATION
+spec:
+  containers:
+    - name: redis
+      image: redis:5.0.4
+      command:
+        - redis-server
+        - "/redis-master/redis.conf"
+      env:
+        - name: MASTER
+          value: "true"
+      ports:
+        - containerPort: 6379
+      resources:
+        limits:
+          cpu: "0.1"
+      volumeMounts:
+        - mountPath: /redis-master-data
+          name: data
+        - mountPath: /redis-master
+          name: config
+  volumes:
+    - name: data
+      emptyDir: {}
+    - name: config
+      configMap:
+        name: redis-config
+        items:
+          - key: redis-config
+            path: redis.conf
+---
+kind: PersistentVolume
+apiVersion: v1
+metadata:
+  name: mongo-data
+  namespace: PLACEHOLDER_APPLICATION
+  labels:
+    type: local
+spec:
+  storageClassName: manual
+  accessModes:
+    - ReadWriteOnce
+  capacity:
+    storage: 1Gi
+  hostPath:
+    path: /mnt/data/mongo
+---
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: mongo-pvc
+  namespace: PLACEHOLDER_APPLICATION
+spec:
+  storageClassName: manual
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 500Mi
+---
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: mongo
+  namespace: PLACEHOLDER_APPLICATION
+  labels:
+    app: mongo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mongo
+  strategy: {}
+  template:
+    metadata:
+      labels:
+        app: mongo
+    spec:
+      containers:
+        - image: mongo
+          name: mongo
+          args: ["--dbpath","/data/db"]
+          livenessProbe:
+            exec:
+              command:
+                - mongo
+                - --disableImplicitSessions
+                - --eval
+                - "db.adminCommand('ping')"
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 6
+          readinessProbe:
+            exec:
+              command:
+                - mongo
+                - --disableImplicitSessions
+                - --eval
+                - "db.adminCommand('ping')"
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 6
+          env:
+            - name: MONGO_INITDB_ROOT_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: mongo-secrets
+                  key: mongo-initdb-root-username
+            - name: MONGO_INITDB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mongo-secrets
+                  key: mongo-initdb-root-password
+          volumeMounts:
+            - name: "mongo-data-dir"
+              mountPath: "/data/db"
+          ports:
+            - containerPort: 27017
+      volumes:
+        - name: "mongo-data-dir"
+          persistentVolumeClaim:
+            claimName: mongo-pvc
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: mongo-service
+  namespace: PLACEHOLDER_APPLICATION
+  labels:
+    app: mongo
+spec:
+  ports:
+    - port: 27017
+      protocol: TCP
+  selector:
+    app: mongo
+  type: NodePort
+status:
+  loadBalancer: {}
+---
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: backend-config
+  namespace: PLACEHOLDER_APPLICATION
+data:
+  redis-ttl: PLACEHOLDER
+  mongo-database: PLACEHOLDER_DATABASE
+---
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: redis-config
+  namespace: PLACEHOLDER_APPLICATION
+data:
+  redis-config: |
+    maxmemory 2mb
+    maxmemory-policy allkeys-lru

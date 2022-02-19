@@ -1,0 +1,4 @@
+k8s/k8s-secrets.yml
+.idea
+build
+.gradle

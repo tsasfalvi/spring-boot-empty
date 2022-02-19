@@ -1,0 +1,9 @@
+openapi: 3.0.3
+info:
+servers:
+  - url: /
+tags:
+paths:
+components:
+  schemas:
+  securitySchemes:
